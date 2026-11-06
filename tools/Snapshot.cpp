@@ -2,8 +2,9 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <cmath>
+#include "../Source/PluginProcessor.h"
+#include "../Source/ui/Pages.h"
 
-juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter();
 
 int main (int argc, char** argv)
 {
@@ -55,5 +56,73 @@ int main (int argc, char** argv)
         png.writeImageToStream (img, os);
     }
     ed.reset();
+
+    auto save = [&] (juce::Component& c, const char* name)
+    {
+        auto img = c.createComponentSnapshot (c.getLocalBounds(), true, 1.0f);
+        juce::PNGImageFormat png;
+        auto f = outDir.getChildFile (name);
+        f.deleteFile();
+        juce::FileOutputStream os (f);
+        png.writeImageToStream (img, os);
+    };
+
+    // Mode expert
+    auto* dp = dynamic_cast<DiamondProcessor*> (proc.get());
+    dp->uiState.setProperty ("expert", true, nullptr);
+    dp->uiState.setProperty ("module", 0, nullptr);
+    ed.reset (proc->createEditorIfNeeded());
+    if (auto* t = dynamic_cast<juce::Timer*> (ed.get()))
+        for (int frame = 0; frame < 200; ++frame)
+        {
+            for (int b = 0; b < 3; ++b)
+            {
+                for (int i = 0; i < 512; ++i)
+                {
+                    const double tt = (frame * 3 + b) * 512 + i;
+                    const double hz = 220.0 * std::pow (2.0, (2.0 * std::sin (tt / 48000.0 * 1.1)) / 12.0);
+                    ph += 2 * juce::MathConstants<double>::pi * hz / 48000.0;
+                    const float s = 0.3f * (float) (std::sin (ph) + 0.5 * std::sin (2 * ph));
+                    buf.setSample (0, i, s); buf.setSample (1, i, s);
+                }
+                proc->processBlock (buf, midi);
+            }
+            t->timerCallback();
+        }
+    save (*ed, "ui_tune_expert.png");
+    ed.reset();
+
+    // Key Finder : suite d'accords Sol majeur
+    {
+        ui::KeyFinderPanel<DiamondProcessor> panel (*dp);
+        theme::LookAndFeel lnf;
+        panel.setLookAndFeel (&lnf);
+        for (auto* c : panel.getChildren())
+            if (auto* b = dynamic_cast<juce::TextButton*> (c))
+                if (b->getButtonText().startsWith ("STOP") || b->getButtonText().contains (juce::String::fromUTF8 ("ÉCOUTER")))
+                    b->onClick();
+        const int chords[4][4] = { { 43, 55, 59, 62 }, { 48, 60, 64, 67 }, { 50, 62, 66, 69 }, { 52, 64, 67, 71 } };
+        double t = 0;
+        for (int sec = 0; sec < 16; ++sec)
+        {
+            for (int blk = 0; blk < 94; ++blk)
+            {
+                for (int i = 0; i < 512; ++i, t += 1.0 / 48000.0)
+                {
+                    double s = 0;
+                    for (int n : chords[sec % 4])
+                    {
+                        const double f = 440.0 * std::pow (2.0, (n - 69) / 12.0);
+                        s += std::sin (2 * juce::MathConstants<double>::pi * f * t) + 0.4 * std::sin (4 * juce::MathConstants<double>::pi * f * t);
+                    }
+                    buf.setSample (0, i, (float) (0.06 * s)); buf.setSample (1, i, (float) (0.06 * s));
+                }
+                proc->processBlock (buf, midi);
+            }
+            dynamic_cast<juce::Timer&> (panel).timerCallback();
+        }
+        save (panel, "ui_keyfinder.png");
+        panel.setLookAndFeel (nullptr);
+    }
     return 0;
 }

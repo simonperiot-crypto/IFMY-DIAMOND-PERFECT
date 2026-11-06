@@ -102,6 +102,8 @@ namespace dsp
 
     //==========================================================================
     // Détection de hauteur YIN sur signal décimé (léger en CPU, précis sur la voix)
+    // Mémoire allouée une fois pour la plage la plus large (50 Hz) ; la plage vocale
+    // et la fenêtre se règlent ensuite en temps réel sans aucune allocation.
     class PitchDetector
     {
     public:
@@ -109,24 +111,38 @@ namespace dsp
         {
             decim  = std::max (1, (int) std::lround (sr / 11025.0));
             dsr    = sr / decim;
-            minLag = std::max (2, (int) std::floor (dsr / 1200.0));
-            maxLag = (int) std::ceil (dsr / 65.0);
-            W      = (int) std::lround (dsr * 0.020);
-            size   = W + maxLag + 2;
+            maxLagAlloc = (int) std::ceil (dsr / 45.0);
+            const int wAlloc = (int) std::lround (dsr * 0.030);
+            sizeAlloc = wAlloc + maxLagAlloc + 2;
             hop    = std::max (8, (int) std::lround (dsr * 0.003));
 
             int n = 64;
-            while (n < size * 2) n <<= 1;
+            while (n < sizeAlloc * 2) n <<= 1;
             ring.assign ((size_t) n, 0.0f);
             rmask = n - 1;
-            lin.assign ((size_t) size, 0.0f);
-            diff.assign ((size_t) maxLag + 2, 1.0f);
+            lin.assign ((size_t) sizeAlloc, 0.0f);
+            diff.assign ((size_t) maxLagAlloc + 2, 1.0f);
 
             aa1.lowpass (sr, dsr * 0.42, 0.5412);
             aa2.lowpass (sr, dsr * 0.42, 1.3066);
             aa1.reset(); aa2.reset();
             wp = dc = hc = filled = 0;
             freq = 0; clarity = 0;
+            configure (cfgMin, cfgMax, cfgWin);
+        }
+
+        // Plage de recherche (Hz) et fenêtre d'analyse (ms). Sans allocation.
+        void configure (float minHz, float maxHz, float windowMs)
+        {
+            cfgMin = std::clamp (minHz, 45.0f, 400.0f);
+            cfgMax = std::clamp (maxHz, cfgMin * 2.0f, 2000.0f);
+            cfgWin = std::clamp (windowMs, 8.0f, 30.0f);
+            if (ring.empty()) return;
+            minLag = std::max (2, (int) std::floor (dsr / cfgMax));
+            maxLag = std::min (maxLagAlloc, (int) std::ceil (dsr / cfgMin));
+            W      = std::max ((int) std::lround (dsr * cfgWin * 0.001), (int) std::lround (dsr / cfgMin)); // >= 1 période
+            size   = std::min (sizeAlloc, W + maxLag + 2);
+            W      = size - maxLag - 2;
         }
 
         // renvoie true quand une nouvelle estimation est disponible
@@ -137,7 +153,7 @@ namespace dsp
             dc = 0;
             ring[(size_t) wp] = y;
             wp = (wp + 1) & rmask;
-            if (filled < size) ++filled;
+            if (filled < sizeAlloc) ++filled;
             if (++hc < hop) return false;
             hc = 0;
             if (filled < size) { freq = 0; return true; }
@@ -147,6 +163,7 @@ namespace dsp
 
         float freq = 0, clarity = 0;
         float threshold = 0.18f;
+        double getDecimatedRate() const { return dsr; }
 
     private:
         void analyse()
@@ -172,17 +189,19 @@ namespace dsp
                 diff[(size_t) tau] = running > 0 ? (float) (s * tau / running) : 1.0f;
             }
 
-            int best = -1;
+            // 1er creux sous le seuil ; sinon le minimum global s'il reste plausible (voix soufflée)
+            int best = -1, globalBest = minLag;
             for (int tau = minLag; tau <= maxLag; ++tau)
             {
-                if (diff[(size_t) tau] < threshold)
+                if (diff[(size_t) tau] < diff[(size_t) globalBest]) globalBest = tau;
+                if (best < 0 && diff[(size_t) tau] < threshold)
                 {
                     while (tau + 1 <= maxLag && diff[(size_t) tau + 1] < diff[(size_t) tau]) ++tau;
                     best = tau;
                     break;
                 }
             }
-
+            if (best < 0 && diff[(size_t) globalBest] < 0.32f) best = globalBest;
             if (best < 0) { freq = 0; clarity = 0; return; }
 
             float t = (float) best;
@@ -190,7 +209,7 @@ namespace dsp
             {
                 const float a = diff[(size_t) best - 1], b = diff[(size_t) best], c = diff[(size_t) best + 1];
                 const float den = a - 2 * b + c;
-                if (std::abs (den) > 1.0e-9f) t = (float) best + 0.5f * (a - c) / den;
+                if (std::abs (den) > 1.0e-9f) t = (float) best + std::clamp (0.5f * (a - c) / den, -1.0f, 1.0f);
             }
             freq = (float) (dsr / t);
             clarity = 1.0f - diff[(size_t) best];
@@ -199,7 +218,8 @@ namespace dsp
         Biquad aa1, aa2;
         std::vector<float> ring, lin, diff;
         double dsr = 11025;
-        int decim = 4, minLag = 9, maxLag = 170, W = 220, size = 400, hop = 33;
+        float cfgMin = 85.0f, cfgMax = 1000.0f, cfgWin = 20.0f;
+        int decim = 4, minLag = 9, maxLag = 170, maxLagAlloc = 245, W = 220, size = 400, sizeAlloc = 600, hop = 33;
         int rmask = 0, wp = 0, dc = 0, hc = 0, filled = 0;
     };
 
@@ -219,12 +239,20 @@ namespace dsp
             ratio = 1.0f;
         }
 
+        // Mode live : fenêtre courte (1 période) = latence ~3 à 6 ms
+        void setLive (bool shouldBeLive)
+        {
+            live = shouldBeLive;
+            Lnom = (float) (sr * (live ? 0.006 : 0.020));
+        }
+
         void setPeriod (float periodSamples)
         {
             if (periodSamples <= 1.0f) { Lpend = Lnom; return; }
-            const float twoP = 2.0f * periodSamples;
-            const int k = std::max (1, (int) std::lround (Lnom / twoP));
-            Lpend = std::clamp (k * twoP, (float) (sr * 0.008), (float) (sr * 0.045));
+            const float unit = live ? periodSamples : 2.0f * periodSamples;
+            const int k = std::max (1, (int) std::lround (Lnom / unit));
+            Lpend = live ? std::clamp (k * unit, (float) (sr * 0.003), (float) (sr * 0.025))
+                         : std::clamp (k * unit, (float) (sr * 0.008), (float) (sr * 0.045));
         }
 
         void setRatio (float r)   { ratio = r; }
@@ -277,6 +305,6 @@ namespace dsp
         double sr = 48000;
         float Lnom = 960, Lpend = 960, ratio = 1;
         float L[2] { 960, 960 }, q[2] { 0.5f, 0.0f }, d[2] { 2, 2 }, g[2] { 1, 0 };
-        bool drift = true;
+        bool drift = true, live = false;
     };
 }

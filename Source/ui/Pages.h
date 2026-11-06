@@ -1,6 +1,7 @@
 #pragma once
 #include "Widgets.h"
 #include "../Params.h"
+#include "../dsp/KeyFinder.h"
 
 namespace ui
 {
@@ -52,43 +53,263 @@ namespace ui
     };
 
     //==========================================================================
+    // Panneau Key Finder (ouvert dans une bulle depuis la page TUNE)
+    template <typename ProcessorType>
+    class KeyFinderPanel : public juce::Component, public juce::Timer
+    {
+    public:
+        explicit KeyFinderPanel (ProcessorType& proc) : pr (proc)
+        {
+            finder.prepare (pr.getKeyFinderRate());
+            scratch.resize (8192);
+
+            for (auto* b : { &voiceBtn, &instrBtn, &listenBtn, &applyBtn }) addAndMakeVisible (b);
+            voiceBtn.setButtonText (T ("VOIX"));
+            instrBtn.setButtonText (T ("INSTRU (side-chain)"));
+            voiceBtn.setClickingTogglesState (true);
+            instrBtn.setClickingTogglesState (true);
+            voiceBtn.setRadioGroupId (77);
+            instrBtn.setRadioGroupId (77);
+            voiceBtn.setToggleState (pr.keyFinderSource.load() == 0, juce::dontSendNotification);
+            instrBtn.setToggleState (pr.keyFinderSource.load() == 1, juce::dontSendNotification);
+            instrBtn.setEnabled (! ProcessorType::isMidiVersion());
+            voiceBtn.onClick = [this] { pr.keyFinderSource.store (0); restart(); };
+            instrBtn.onClick = [this] { pr.keyFinderSource.store (1); restart(); };
+
+            listenBtn.setButtonText (T ("ÉCOUTER"));
+            listenBtn.onClick = [this] { if (listening) stop(); else start(); };
+            applyBtn.setButtonText (T ("APPLIQUER"));
+            applyBtn.setEnabled (false);
+            applyBtn.onClick = [this] { apply(); };
+
+            setSize (420, 320);
+            startTimerHz (20);
+        }
+
+        ~KeyFinderPanel() override { pr.keyFinderActive.store (false); }
+
+        void resized() override
+        {
+            auto r = getLocalBounds().reduced (18);
+            r.removeFromTop (30);
+            auto src = r.removeFromTop (30);
+            voiceBtn.setBounds (src.removeFromLeft (110));
+            src.removeFromLeft (8);
+            instrBtn.setBounds (src.removeFromLeft (180));
+            auto bottom = r.removeFromBottom (38);
+            listenBtn.setBounds (bottom.removeFromLeft (bottom.getWidth() / 2 - 5));
+            bottom.removeFromLeft (10);
+            applyBtn.setBounds (bottom);
+            area = r.reduced (0, 10);
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            g.fillAll (theme::bg1);
+            auto r = getLocalBounds().reduced (18).toFloat();
+            g.setColour (theme::text);
+            g.setFont (theme::font (16.0f, true));
+            g.drawText ("KEY FINDER", r.removeFromTop (24), juce::Justification::centredLeft);
+
+            auto a = area.toFloat();
+            const auto res = finder.result();
+            const float progress = juce::jlimit (0.0f, 1.0f, finder.analysedFrames() / 40.0f);
+
+            // Profil chromatique (12 barres)
+            auto bars = a.removeFromBottom (54);
+            const auto& prof = finder.profile();
+            double mx = 0;
+            for (double v : prof) mx = std::max (mx, v);
+            static const char* names[12] = { "Do", "Do#", "Re", "Mib", "Mi", "Fa", "Fa#", "Sol", "Lab", "La", "Sib", "Si" };
+            const float bw = bars.getWidth() / 12.0f;
+            for (int i = 0; i < 12; ++i)
+            {
+                auto col = juce::Rectangle<float> (bars.getX() + i * bw, bars.getY(), bw, bars.getHeight() - 14).reduced (3, 0);
+                const float h = mx > 0 ? (float) (prof[(size_t) i] / mx) : 0.0f;
+                g.setColour (juce::Colour (0x14ffffff));
+                g.fillRoundedRectangle (col, 3);
+                g.setColour (res.key == i ? theme::cyan : theme::violet.withAlpha (0.8f));
+                g.fillRoundedRectangle (col.withTrimmedTop (col.getHeight() * (1.0f - h)), 3);
+                g.setColour (theme::dim);
+                g.setFont (theme::font (10.0f));
+                g.drawText (T (names[i]), juce::Rectangle<float> (col.getX() - 4, bars.getBottom() - 13, col.getWidth() + 8, 12), juce::Justification::centred);
+            }
+
+            // Résultat
+            a.removeFromBottom (6);
+            if (res.key >= 0)
+            {
+                g.setGradientFill (theme::neon (a));
+                g.setFont (theme::font (30.0f, true));
+                g.drawText (keyName (res.key, res.minor), a.removeFromTop (40), juce::Justification::centred);
+                g.setColour (theme::silver);
+                g.setFont (theme::font (13.0f));
+                g.drawText (T ("Confiance ") + juce::String (juce::roundToInt (res.confidence * 100)) + T (" %   ·   sinon : ") + keyName (res.secondKey, res.secondMinor),
+                            a.removeFromTop (20), juce::Justification::centred);
+            }
+            else
+            {
+                g.setColour (theme::silver);
+                g.setFont (theme::font (14.0f));
+                g.drawText (listening ? T ("J'écoute… chante ou lance l'instru") : T ("Clique sur ÉCOUTER puis chante 15 à 30 s"),
+                            a.removeFromTop (40), juce::Justification::centred);
+            }
+
+            auto bar = a.removeFromBottom (6).reduced (40, 0);
+            g.setColour (juce::Colour (0x18ffffff));
+            g.fillRoundedRectangle (bar, 3);
+            g.setGradientFill (theme::neon (bar));
+            g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * progress), 3);
+        }
+
+        static juce::String keyName (int k, bool minor)
+        {
+            static const char* fr[12] = { "Do", "Do#", "Ré", "Mib", "Mi", "Fa", "Fa#", "Sol", "Lab", "La", "Sib", "Si" };
+            if (k < 0) return "-";
+            return T (fr[k]) + (minor ? " mineur" : " majeur");
+        }
+
+    private:
+        void start()
+        {
+            finder.reset();
+            readPos = pr.keyFinderWritePos();
+            pr.keyFinderActive.store (true);
+            listening = true;
+            listenBtn.setButtonText ("STOP");
+            repaint();
+        }
+
+        void stop()
+        {
+            pr.keyFinderActive.store (false);
+            listening = false;
+            listenBtn.setButtonText (T ("ÉCOUTER"));
+            repaint();
+        }
+
+        void restart() { if (listening) start(); }
+
+        void apply()
+        {
+            const auto res = finder.result();
+            if (res.key < 0) return;
+            auto set = [this] (const char* id, int index)
+            {
+                if (auto* prm = dynamic_cast<juce::AudioParameterChoice*> (pr.apvts.getParameter (id)))
+                {
+                    prm->beginChangeGesture();
+                    prm->setValueNotifyingHost (prm->convertTo0to1 ((float) index));
+                    prm->endChangeGesture();
+                }
+            };
+            set (pid::key, res.key);
+            set (pid::scale, res.minor ? 1 : 0); // Mineure naturelle / Majeure
+            stop();
+        }
+
+        void timerCallback() override
+        {
+            if (listening)
+            {
+                int got;
+                while ((got = pr.readKeyFinder (scratch.data(), (int) scratch.size(), readPos)) > 0)
+                    finder.push (scratch.data(), got);
+            }
+            applyBtn.setEnabled (finder.result().key >= 0);
+            repaint();
+        }
+
+        ProcessorType& pr;
+        dsp::KeyFinder finder;
+        std::vector<float> scratch;
+        uint32_t readPos = 0;
+        bool listening = false;
+        juce::TextButton voiceBtn, instrBtn, listenBtn, applyBtn;
+        juce::Rectangle<int> area;
+    };
+
+    //==========================================================================
     template <typename ProcessorType>
     class TunePage : public Page
     {
     public:
         explicit TunePage (ProcessorType& proc) : pr (proc), s (proc.apvts),
-            key (s, pid::key), scale (s, pid::scale), midiForce (s, pid::midiForce, "Notes MIDI")
+            key (s, pid::key), scale (s, pid::scale), range (s, pid::range), mode (s, pid::mode), engine (s, pid::engine),
+            midiForce (s, pid::midiForce, "Notes MIDI"), formant (s, pid::formant, "Formants")
         {
             addAndMakeVisible (display);
             addAndMakeVisible (keyboard);
-            addAndMakeVisible (key);
-            addAndMakeVisible (scale);
+            for (auto* c : { &key, &scale, &range, &mode, &engine }) addAndMakeVisible (c);
+            addAndMakeVisible (formant);
+            addAndMakeVisible (keyBtn);
             if (ProcessorType::isMidiVersion()) addAndMakeVisible (midiForce);
+
+            key.setTooltip (T ("Tonalité"));
+            scale.setTooltip (T ("Gamme"));
+            range.setTooltip (T ("Plage vocale : règle la détection (et la latence du moteur Studio)"));
+            mode.setTooltip (T ("Auto = moderne et naturel · Classic = correction vintage"));
+            engine.setTooltip (T ("Studio = meilleure qualité, formants conservés · Live = faible latence pour enregistrer"));
+            formant.setTooltip (T ("Conserver le timbre de la voix quand elle est transposée (moteur Studio)"));
+
+            keyBtn.setButtonText (T ("◆ KEY FINDER"));
+            keyBtn.setTooltip (T ("Détecter la tonalité en écoutant ta voix ou l'instru"));
+            keyBtn.onClick = [this]
+            {
+                auto panel = std::make_unique<KeyFinderPanel<ProcessorType>> (pr);
+                panel->setLookAndFeel (&getLookAndFeel());
+                juce::CallOutBox::launchAsynchronously (std::move (panel), keyBtn.getScreenBounds(), nullptr);
+            };
 
             retune    = &knob (s, pid::retune,    "VITESSE");
             amount    = &knob (s, pid::amount,    "INTENSITÉ");
             humanize  = &knob (s, pid::humanize,  "HUMANIZE");
+            flex      = &knob (s, pid::flex,      "FLEX-TUNE");
             transpose = &knob (s, pid::transpose, "TRANSPOSE");
+            throat    = &knob (s, pid::throat,    "GORGE");
             ref       = &knob (s, pid::refHz,     "RÉFÉRENCE LA", true);
+            vDepth    = &knob (s, pid::vibDepth,  "VIBRATO", true);
+            vRate     = &knob (s, pid::vibRate,   "VIT. VIBRATO", true);
+            vDelay    = &knob (s, pid::vibDelay,  "DÉLAI VIBRATO", true);
         }
 
         void resized() override
         {
             auto r = getLocalBounds();
-            display.setBounds (r.removeFromTop (r.getHeight() * 46 / 100));
-            r.removeFromTop (14);
-
-            auto row = r.removeFromTop (86);
-            auto left = row.removeFromLeft (300);
-            keyboard.setBounds (row.reduced (12, 0));
-            auto l1 = left.removeFromTop (40);
-            key.setBounds (l1.removeFromLeft (110).reduced (0, 4));
-            l1.removeFromLeft (8);
-            scale.setBounds (l1.reduced (0, 4));
-            if (ProcessorType::isMidiVersion()) midiForce.setBounds (left.removeFromTop (34).reduced (0, 4).withWidth (160));
-
+            display.setBounds (r.removeFromTop (expert ? 172 : 238));
             r.removeFromTop (12);
-            layoutRow (r, { retune, amount, humanize, transpose, ref }, 130);
+
+            auto row = r.removeFromTop (84);
+            auto left = row.removeFromLeft (330);
+            auto l1 = left.removeFromTop (40).reduced (0, 4);
+            key.setBounds (l1.removeFromLeft (110)); l1.removeFromLeft (8);
+            scale.setBounds (l1);
+            auto l2 = left.removeFromTop (40).reduced (0, 4);
+            range.setBounds (l2.removeFromLeft (134)); l2.removeFromLeft (8);
+            mode.setBounds (l2.removeFromLeft (90)); l2.removeFromLeft (8);
+            if (ProcessorType::isMidiVersion()) midiForce.setBounds (l2);
+
+            auto right = row.removeFromRight (226);
+            auto r1 = right.removeFromTop (40).reduced (0, 4);
+            engine.setBounds (r1);
+            auto r2 = right.removeFromTop (40).reduced (0, 4);
+            keyBtn.setBounds (r2.removeFromLeft (112)); r2.removeFromLeft (8);
+            formant.setBounds (r2);
+
+            keyboard.setBounds (row.reduced (12, 0));
+
+            r.removeFromTop (10);
+            if (expert)
+            {
+                auto top = r.removeFromTop (r.getHeight() / 2);
+                r.removeFromTop (4);
+                layoutRow (top, { retune, amount, humanize, flex, transpose, throat }, 120);
+                layoutRow (r, { ref, vDepth, vRate, vDelay }, 120);
+            }
+            else
+            {
+                layoutRow (r, { retune, amount, humanize, flex, transpose, throat }, 120);
+            }
         }
 
         void tick() override
@@ -100,6 +321,7 @@ namespace ui
             const float tg = t.uiTarget.load();
             const bool midiNow = ProcessorType::isMidiVersion() && pr.midiNotesHeld.load() > 0 && *s.getRawParameterValue (pid::midiForce) > 0.5f;
             keyboard.setState (m, tg > 0 && t.uiDetected.load() > 0 ? ((int) std::lround (tg)) % 12 : -1, midiNow);
+            formant.setEnabled (*s.getRawParameterValue (pid::engine) < 0.5f);
         }
 
     private:
@@ -107,9 +329,10 @@ namespace ui
         APVTS& s;
         PitchDisplay display;
         ScaleKeyboard keyboard;
-        Choice key, scale;
-        Toggle midiForce;
-        Knob *retune, *amount, *humanize, *transpose, *ref;
+        Choice key, scale, range, mode, engine;
+        Toggle midiForce, formant;
+        juce::TextButton keyBtn;
+        Knob *retune, *amount, *humanize, *flex, *transpose, *throat, *ref, *vDepth, *vRate, *vDelay;
     };
 
     //==========================================================================
@@ -282,12 +505,13 @@ namespace ui
             auto t = r.reduced (20, 16);
             g.setColour (theme::text);
             g.setFont (theme::font (15.0f, true));
-            g.drawText (T ("IFMY DIAMOND PERFECT · Phase 1"), t.removeFromTop (24), juce::Justification::centredLeft);
+            g.drawText (T ("IFMY DIAMOND PERFECT · Phase 2"), t.removeFromTop (24), juce::Justification::centredLeft);
             g.setFont (theme::font (13.5f));
             g.setColour (theme::silver);
             const double latMs = pr.getSampleRate() > 0 ? 1000.0 * pr.getLatencySamples() / pr.getSampleRate() : 10.0;
             juce::StringArray lines {
-                T ("Latence déclarée à Logic : ") + juce::String (latMs, 1) + " ms (compensée automatiquement)",
+                T ("Latence déclarée à Logic : ") + juce::String (latMs, 1) + T (" ms (compensée automatiquement)"),
+                T ("Moteur TUNE : Studio = formants conservés · Live ≈ 3 ms pour enregistrer"),
                 T (ProcessorType::isMidiVersion() ? "Version MIDI : joue des notes au clavier pour forcer la justesse"
                                                  : "Version effet : pour le clavier MIDI, utilise « IFMY Diamond Perfect MIDI »"),
                 T ("Anti-saturation : protège tes enceintes et ton mix des pics au-dessus de 0 dB"),

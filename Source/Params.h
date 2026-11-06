@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "dsp/Scales.h"
+#include "dsp/AutoTune.h"
 
 // ============================================================================
 //  IDs de paramètres FIXES.
@@ -25,6 +26,16 @@ namespace pid
     inline constexpr const char* transpose = "tune_transpose";
     inline constexpr const char* refHz     = "tune_ref";
     inline constexpr const char* midiForce = "tune_midi";
+    // TUNE — Phase 2
+    inline constexpr const char* engine    = "tune_engine";
+    inline constexpr const char* mode      = "tune_mode";
+    inline constexpr const char* range     = "tune_range";
+    inline constexpr const char* flex      = "tune_flex";
+    inline constexpr const char* formant   = "tune_formant";
+    inline constexpr const char* throat    = "tune_throat";
+    inline constexpr const char* vibDepth  = "vib_depth";
+    inline constexpr const char* vibRate   = "vib_rate";
+    inline constexpr const char* vibDelay  = "vib_delay";
 
     // DYNAMICS
     inline constexpr const char* dynOn     = "dyn_on";
@@ -70,10 +81,11 @@ namespace pid
     // Paramètres que les presets ne touchent pas (réglages de la session du chanteur)
     inline bool isSessionParam (const juce::String& id)
     {
-        return id == bypass || id == inGain || id == outGain || id == safety;
+        return id == bypass || id == inGain || id == outGain || id == safety || id == engine;
     }
 
-    inline bool isKeyParam (const juce::String& id) { return id == key || id == scale; }
+    // Réglages liés au chanteur / au morceau, gardés quand on change de preset (option « garder ma tonalité »)
+    inline bool isKeyParam (const juce::String& id) { return id == key || id == scale || id == range; }
 }
 
 namespace params
@@ -99,6 +111,16 @@ namespace params
                             return juce::String (v, decimals) + (u.isEmpty() ? "" : " " + u);
                         });
         return std::make_unique<APF> (id (i), name, r, def, attrs);
+    }
+
+    // Paramètre ajouté en Phase 2
+    inline std::unique_ptr<APF> f2 (const char* i, const char* name, float lo, float hi, float def, const char* unit, int decimals = 1)
+    {
+        auto p = f (i, name, lo, hi, def, unit, decimals);
+        juce::String u (unit);
+        auto attrs = juce::AudioParameterFloatAttributes().withLabel (u)
+                        .withStringFromValueFunction ([u, decimals] (float v, int) { return juce::String (v, decimals) + (u.isEmpty() ? "" : " " + u); });
+        return std::make_unique<APF> (id (i, 2), name, p->getNormalisableRange(), def, attrs);
     }
 
     inline std::unique_ptr<APB> b (const char* i, const char* name, bool def)
@@ -179,6 +201,20 @@ namespace params
         v.push_back (f (pid::revDamp,  "Reverb Damping", 0, 100, 45, "%", 0));
         v.push_back (f (pid::revWidth, "Reverb Width", 0, 100, 90, "%", 0));
         v.push_back (f (pid::revMix,   "Reverb Mix", 0, 100, 12, "%", 0));
+
+        // ---- Phase 2 (ajoutés à la fin, version 2 : compatibilité des projets v0.1) ----
+        juce::StringArray ranges;
+        for (auto& r : dsp::kRanges) ranges.add (juce::String (r.name).replace ("Tenor", juce::String::fromUTF8 ("Ténor")));
+        v.push_back (std::make_unique<APC> (id (pid::engine, 2), "Engine",
+                        juce::StringArray { "Studio (formants)", juce::String::fromUTF8 ("Live (faible latence)") }, 0));
+        v.push_back (std::make_unique<APC> (id (pid::mode, 2),  "Tune Mode", juce::StringArray { "Auto", "Classic" }, 0));
+        v.push_back (std::make_unique<APC> (id (pid::range, 2), "Voice Range", ranges, dsp::kDefaultRange));
+        v.push_back (f2 (pid::flex,     "Flex-Tune", 0, 100, 0, "%", 0));
+        v.push_back (std::make_unique<APB> (id (pid::formant, 2), "Formant Preserve", true));
+        v.push_back (f2 (pid::throat,   "Throat", 60, 140, 100, "%", 0));
+        v.push_back (f2 (pid::vibDepth, "Vibrato Depth", 0, 100, 0, "ct", 0));
+        v.push_back (f2 (pid::vibRate,  "Vibrato Rate", 2, 9, 5.5f, "Hz", 1));
+        v.push_back (f2 (pid::vibDelay, "Vibrato Delay", 0, 1000, 250, "ms", 0));
 
         return { v.begin(), v.end() };
     }

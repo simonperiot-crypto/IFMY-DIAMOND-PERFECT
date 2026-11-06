@@ -22,7 +22,14 @@ Plugin **Audio Unit** (+ VST3), universel Apple Silicon / Intel, macOS 12 ou plu
 
 ---
 
-## Phase 1 (cette version)
+## Phase 2 (v0.2.0) : TUNE avancé
+
+- Moteur **STUDIO** (formants conservés) et moteur **LIVE** (~3 ms) pour enregistrer
+- **Gorge** et **formants**, **Flex-Tune**, mode **Classic**, **vibrato** ajouté, **plage vocale**
+- **Key Finder** : détecte la tonalité de ta voix ou de l'instru (side-chain), puis l'applique en 1 clic
+- 19 presets d'usine
+
+## Phase 1
 
 - **TUNE** : autotune temps réel, 12 tonalités × 48 gammes, vitesse, intensité, humanize, transpose, référence La 430 à 450 Hz, notes forcées au clavier MIDI, courbe de justesse en direct
 - **DYNAMICS** : gate, de-esser, compresseur, saturation
@@ -37,10 +44,10 @@ Plugin **Audio Unit** (+ VST3), universel Apple Silicon / Intel, macOS 12 ou plu
 | Phase | Contenu |
 |---|---|
 | 1 ✅ | Squelette, CI, TUNE, dynamique, EQ, FX, presets |
-| 2 | TUNE avancé : détection plus robuste, mode faible latence < 5 ms, formant, throat, vibrato, Key Finder |
+| 2 ✅ | TUNE avancé : détection robuste, moteur Live ~3 ms, formants, gorge, Flex-Tune, Classic, vibrato, Key Finder |
 | 3 | Dynamics/EQ/FX complets (EQ 8 bandes, ducking, Unmask side-chain…) + **50 presets** |
 | 4 | **HARMONY** : 4 voix, 15 styles, chœur 32 voix, MIDI |
-| 5 | **VOCODER** + voix synthétiques + **BENDER** |
+| 5 | **VOCODER** + voix synthétiques + **BENDER** + mode EFX (motifs de pitch rythmiques) |
 | 6 | **GRAPH** : édition note par note |
 | 7 | Vocal Assistant, débruitage IA, resynthèse, finitions |
 
@@ -50,7 +57,7 @@ Plugin **Audio Unit** (+ VST3), universel Apple Silicon / Intel, macOS 12 ou plu
 
 - `auval` (le test officiel de Logic) sur les 2 versions
 - `pluginval` **niveau 10** (stress test maximal) sur les 2 versions
-- Tests DSP : justesse à 44,1 / 48 / 88,2 / 96 kHz, gammes, référence 432 Hz, notes MIDI, aucun NaN
+- 53 tests DSP : justesse à 44,1 / 48 / 88,2 / 96 kHz, moteurs Studio et Live, formants, gorge, Flex-Tune, vibrato, anti-saut d'octave, niveau conservé, Key Finder, aucun NaN
 - Thread audio sans allocation ni verrou, traitement par tranches (tous buffers), paramètres lissés, anti-dénormaux, anti-NaN
 - IDs de paramètres figés (`Source/Params.h`) : les projets Logic et les presets restent compatibles d'une version à l'autre
 

@@ -73,6 +73,31 @@ const std::vector<PresetManager::FactoryPreset>& PresetManager::factory()
           { { "tune_retune", 40 }, { "tune_amount", 85 }, { "tune_humanize", 40 }, { "eq_air", 3 }, { "dly_on", 1 },
             { "dly_div", 2 }, { "dly_fb", 40 }, { "dly_mix", 14 }, { "rev_size", 95 }, { "rev_damp", 25 }, { "rev_mix", 34 } } },
 
+        // ---- Phase 2 : Classic, Flex-Tune, vibrato, gorge / formants ----
+        { "Classic 98", "Hard tune",
+          { { "tune_mode", 1 }, { "tune_retune", 0 }, { "tune_amount", 100 }, { "eq_hpf", 120 }, { "eq_pres", 3 },
+            { "eq_air", 2 }, { "cmp_thr", -22 }, { "cmp_ratio", 4 }, { "cmp_gain", 4 }, { "dly_on", 1 }, { "dly_div", 5 },
+            { "dly_mix", 8 }, { "rev_mix", 10 } } },
+
+        { "Flex Naturel", "Autotune naturel",
+          { { "tune_retune", 15 }, { "tune_amount", 100 }, { "tune_humanize", 30 }, { "tune_flex", 70 }, { "eq_hpf", 80 },
+            { "eq_air", 2.5f }, { "cmp_thr", -18 }, { "cmp_ratio", 3 }, { "cmp_gain", 3 }, { "rev_mix", 11 } } },
+
+        { "Diva Vibrato", "R&B / Soul",
+          { { "tune_retune", 20 }, { "tune_amount", 95 }, { "tune_humanize", 40 }, { "vib_depth", 35 }, { "vib_rate", 5.2f },
+            { "vib_delay", 300 }, { "eq_hpf", 85 }, { "eq_mud", -2 }, { "eq_air", 4 }, { "cmp_thr", -20 }, { "cmp_ratio", 3 },
+            { "dbl_on", 1 }, { "dbl_mix", 18 }, { "rev_size", 70 }, { "rev_mix", 20 } } },
+
+        { "Gorge Profonde", "Voix creatives",
+          { { "tune_retune", 10 }, { "tune_transpose", -5 }, { "tune_throat", 128 }, { "tune_formant", 1 }, { "eq_hpf", 60 },
+            { "eq_mud", -3 }, { "cmp_thr", -22 }, { "cmp_ratio", 4 }, { "sat_on", 1 }, { "sat_drive", 8 }, { "sat_mix", 30 },
+            { "rev_size", 60 }, { "rev_mix", 14 } } },
+
+        { "Chipmunk Pop", "Voix creatives",
+          { { "tune_retune", 0 }, { "tune_transpose", 7 }, { "tune_formant", 0 }, { "tune_throat", 88 }, { "eq_hpf", 160 },
+            { "eq_air", 3 }, { "cmp_thr", -20 }, { "cmp_ratio", 4 }, { "dly_on", 1 }, { "dly_div", 7 }, { "dly_mix", 12 },
+            { "rev_mix", 10 } } },
+
         { "Voix seule (sans effets)", "Utilitaire",
           { { "eq_on", 0 }, { "dyn_on", 0 }, { "fx_on", 0 } } },
     };

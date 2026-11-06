@@ -11,7 +11,7 @@
  #define DIAMOND_MIDI 0
 #endif
 
-class DiamondProcessor : public juce::AudioProcessor
+class DiamondProcessor : public juce::AudioProcessor, private juce::AsyncUpdater
 {
 public:
     DiamondProcessor();
@@ -56,11 +56,20 @@ public:
 
     static constexpr bool isMidiVersion() { return DIAMOND_MIDI != 0; }
 
+    // --- Key Finder : le thread audio copie un signal mono décimé (~12 kHz) dans un anneau sans verrou
+    std::atomic<bool> keyFinderActive { false };
+    std::atomic<int>  keyFinderSource { 0 };     // 0 = voix (entrée), 1 = instru (side-chain)
+    int  readKeyFinder (float* dest, int maxSamples, uint32_t& readPos) const;
+    double getKeyFinderRate() const { return kfRate; }
+    uint32_t keyFinderWritePos() const { return kfWrite.load(); }
+    bool sidechainConnected() const;
+
 private:
     struct P // pointeurs vers les valeurs brutes (aucune recherche par nom dans le thread audio)
     {
         std::atomic<float> *bypass, *inGain, *outGain, *safety,
             *tuneOn, *key, *scale, *retune, *amount, *humanize, *transpose, *refHz, *midiForce,
+            *engine, *mode, *range, *flex, *formant, *throat, *vibDepth, *vibRate, *vibDelay,
             *dynOn, *gateOn, *gateThr, *dsOn, *dsFreq, *dsThr, *cmpOn, *cmpThr, *cmpRatio, *cmpAtt, *cmpRel, *cmpGain,
             *satOn, *satDrive, *satMix,
             *eqOn, *eqHpf, *eqMud, *eqPres, *eqAir,
@@ -70,6 +79,9 @@ private:
 
     static BusesProperties makeBuses();
     void cacheParams();
+    dsp::AutoTune::Params tuneParams (uint16_t midiMask) const;
+    void handleAsyncUpdate() override;
+    void feedKeyFinder (juce::AudioBuffer<float>& buffer, int n);
     void handleMidi (const juce::MidiBuffer& midi);
     void processChunk (float** ch, int nc, int n, uint16_t midiMask);
     static constexpr int kChunk = 1024;
@@ -92,6 +104,15 @@ private:
 
     juce::SmoothedValue<float> inGainS, outGainS, revMixS, wetS;
     float lastEq[4] { -999, -999, -999, -999 };
+
+    std::atomic<int> reportedLatency { 0 }, pendingLatency { 0 };
+
+    static constexpr int kKfSize = 1 << 16;
+    std::vector<float> kfRing = std::vector<float> ((size_t) kKfSize, 0.0f);
+    std::atomic<uint32_t> kfWrite { 0 };
+    dsp::Biquad kfLp1, kfLp2;
+    int kfDecim = 4, kfCount = 0;
+    double kfRate = 12000;
     bool held[128] {};
 
     JUCE_DECLARE_WEAK_REFERENCEABLE (DiamondProcessor)

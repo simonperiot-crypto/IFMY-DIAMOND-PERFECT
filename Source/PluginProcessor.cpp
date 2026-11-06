@@ -35,6 +35,8 @@ void DiamondProcessor::cacheParams()
     p = { g (pid::bypass), g (pid::inGain), g (pid::outGain), g (pid::safety),
           g (pid::tuneOn), g (pid::key), g (pid::scale), g (pid::retune), g (pid::amount), g (pid::humanize),
           g (pid::transpose), g (pid::refHz), g (pid::midiForce),
+          g (pid::engine), g (pid::mode), g (pid::range), g (pid::flex), g (pid::formant), g (pid::throat),
+          g (pid::vibDepth), g (pid::vibRate), g (pid::vibDelay),
           g (pid::dynOn), g (pid::gateOn), g (pid::gateThr), g (pid::dsOn), g (pid::dsFreq), g (pid::dsThr),
           g (pid::cmpOn), g (pid::cmpThr), g (pid::cmpRatio), g (pid::cmpAtt), g (pid::cmpRel), g (pid::cmpGain),
           g (pid::satOn), g (pid::satDrive), g (pid::satMix),
@@ -42,6 +44,77 @@ void DiamondProcessor::cacheParams()
           g (pid::fxOn), g (pid::dblOn), g (pid::dblMix), g (pid::dblWidth), g (pid::dlyOn), g (pid::dlyDiv),
           g (pid::dlyFb), g (pid::dlyTone), g (pid::dlyMix), g (pid::dlyPing),
           g (pid::revOn), g (pid::revSize), g (pid::revDamp), g (pid::revWidth), g (pid::revMix) };
+}
+
+dsp::AutoTune::Params DiamondProcessor::tuneParams (uint16_t midiMask) const
+{
+    dsp::AutoTune::Params tp;
+    tp.on        = *p.tuneOn > 0.5f;
+    tp.key       = juce::jlimit (0, 11, (int) *p.key);
+    tp.scale     = dsp::kScales[juce::jlimit (0, dsp::kNumScales - 1, (int) *p.scale)].mask;
+    tp.retuneMs  = *p.retune;
+    tp.amount    = *p.amount * 0.01f;
+    tp.humanize  = *p.humanize * 0.01f;
+    tp.transpose = std::round (p.transpose->load());
+    tp.refHz     = *p.refHz;
+    tp.midiMask  = midiMask;
+    tp.live      = *p.engine > 0.5f;
+    tp.classic   = *p.mode > 0.5f;
+    tp.range     = juce::jlimit (0, dsp::kNumRanges - 1, (int) *p.range);
+    tp.flex      = *p.flex * 0.01f;
+    tp.formant   = *p.formant > 0.5f;
+    tp.throat    = *p.throat * 0.01f;
+    tp.vibDepth  = *p.vibDepth * 0.01f;
+    tp.vibRate   = *p.vibRate;
+    tp.vibDelay  = *p.vibDelay;
+    return tp;
+}
+
+void DiamondProcessor::handleAsyncUpdate()
+{
+    // Changement de moteur ou de plage vocale : on informe Logic de la nouvelle latence
+    const int lat = pendingLatency.load();
+    if (lat != getLatencySamples()) setLatencySamples (lat);
+    reportedLatency.store (lat);
+}
+
+bool DiamondProcessor::sidechainConnected() const
+{
+    if (getBusCount (true) < 2) return false;
+    auto* bus = getBus (true, 1);
+    return bus != nullptr && bus->isEnabled() && bus->getNumberOfChannels() > 0;
+}
+
+void DiamondProcessor::feedKeyFinder (juce::AudioBuffer<float>& buffer, int n)
+{
+    const bool sc = keyFinderSource.load() == 1 && sidechainConnected();
+    auto src = getBusBuffer (buffer, true, sc ? 1 : 0);
+    const int chans = juce::jmin (2, src.getNumChannels());
+    if (chans == 0) return;
+    uint32_t w = kfWrite.load (std::memory_order_relaxed);
+    for (int i = 0; i < n; ++i)
+    {
+        float x = 0;
+        for (int c = 0; c < chans; ++c) x += src.getSample (c, i);
+        x = kfLp2.process (kfLp1.process (x / (float) chans));
+        if (++kfCount >= kfDecim)
+        {
+            kfCount = 0;
+            kfRing[(size_t) (w & (kKfSize - 1))] = x;
+            ++w;
+        }
+    }
+    kfWrite.store (w, std::memory_order_release);
+}
+
+int DiamondProcessor::readKeyFinder (float* dest, int maxSamples, uint32_t& readPos) const
+{
+    const uint32_t w = kfWrite.load (std::memory_order_acquire);
+    if (w - readPos > (uint32_t) kKfSize - 4096) readPos = w - 4096; // lecteur en retard : on rattrape
+    int count = 0;
+    while (readPos != w && count < maxSamples)
+        dest[count++] = kfRing[(size_t) (readPos++ & (kKfSize - 1))];
+    return count;
 }
 
 //==============================================================================
@@ -93,10 +166,19 @@ void DiamondProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     sr = sampleRate;
     maxBlock = juce::jmax (32, samplesPerBlock);
 
+    tuner.setParams (tuneParams (0));
     tuner.prepare (sr, 2);
     const int latency = tuner.getLatency();
     setLatencySamples (latency);
-    for (auto& d : dryLine) d.prepare (latency + kChunk + 64);
+    reportedLatency.store (latency);
+    pendingLatency.store (latency);
+    for (auto& d : dryLine) d.prepare ((int) (sr * 0.06) + kChunk + 64); // couvre la latence max (plage Basse)
+
+    kfDecim = juce::jmax (1, (int) std::lround (sr / 12000.0));
+    kfRate = sr / kfDecim;
+    kfLp1.lowpass (sr, kfRate * 0.42, 0.5412); kfLp1.reset();
+    kfLp2.lowpass (sr, kfRate * 0.42, 1.3066); kfLp2.reset();
+    kfCount = 0;
 
     gate.prepare (sr);
     for (int c = 0; c < 2; ++c) { hpf[c].reset(); mud[c].reset(); pres[c].reset(); air[c].reset(); }
@@ -156,6 +238,8 @@ void DiamondProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     }
     midi.clear();
 
+    if (keyFinderActive.load (std::memory_order_relaxed)) feedKeyFinder (buffer, n);
+
     // Tranches de taille fixe : marche avec n'importe quelle taille de buffer envoyée par Logic
     for (int start = 0; start < n; start += kChunk)
     {
@@ -164,6 +248,14 @@ void DiamondProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     }
 
     for (int c = nc; c < main.getNumChannels(); ++c) main.clear (c, 0, n);
+
+    // Latence modifiée (moteur Studio/Live ou plage vocale) -> annoncée à Logic depuis le thread principal
+    const int lat = tuner.getLatency();
+    if (lat != pendingLatency.load (std::memory_order_relaxed))
+    {
+        pendingLatency.store (lat);
+        triggerAsyncUpdate();
+    }
 
     // Charge CPU = temps de calcul / durée du bloc
     const double elapsed = juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - t0);
@@ -174,17 +266,7 @@ void DiamondProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
 void DiamondProcessor::processChunk (float** ch, int nc, int n, uint16_t midiMask)
 {
     // --- Paramètres --------------------------------------------------------------
-    dsp::AutoTune::Params tp;
-    tp.on        = *p.tuneOn > 0.5f;
-    tp.key       = juce::jlimit (0, 11, (int) *p.key);
-    tp.scale     = dsp::kScales[juce::jlimit (0, dsp::kNumScales - 1, (int) *p.scale)].mask;
-    tp.retuneMs  = *p.retune;
-    tp.amount    = *p.amount * 0.01f;
-    tp.humanize  = *p.humanize * 0.01f;
-    tp.transpose = std::round (p.transpose->load());
-    tp.refHz     = *p.refHz;
-    tp.midiMask  = midiMask;
-    tuner.setParams (tp);
+    tuner.setParams (tuneParams (midiMask));
 
     const bool dynOn = *p.dynOn > 0.5f, fxOn = *p.fxOn > 0.5f;
     const bool gateOn = dynOn && *p.gateOn > 0.5f, dsOn = dynOn && *p.dsOn > 0.5f,
