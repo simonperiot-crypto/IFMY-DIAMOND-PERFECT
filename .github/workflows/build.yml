@@ -92,9 +92,13 @@ jobs:
           name: IFMY-Diamond-Perfect-mac
           path: IFMY-Diamond-Perfect-mac-v*.zip
 
-      - name: Release GitHub (sur tag vX.Y.Z)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Release GitHub (lien de téléchargement direct)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ env.VERSION }}
+          name: IFMY Diamond Perfect v${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
           files: IFMY-Diamond-Perfect-mac-v*.zip
           body_path: CHANGELOG.md
+          make_latest: true
