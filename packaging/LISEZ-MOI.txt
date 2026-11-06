@@ -1,0 +1,28 @@
+IFMY DIAMOND PERFECT — installation (Mac + Logic Pro)
+=====================================================
+
+1. Double-clique sur « Installer.command ».
+   La première fois, macOS peut le bloquer : fais clic droit > Ouvrir > Ouvrir.
+   (Ou Réglages Système > Confidentialité et sécurité > « Ouvrir quand même ».)
+
+2. Relance Logic Pro.
+
+3. Sur ta piste voix :
+   - Effet normal : Audio FX > Audio Units > IFMY > IFMY Diamond Perfect
+   - Avec ton clavier MIDI (notes forcées, puis harmonies et vocodeur en Phase 4-5) :
+     crée une piste d'instrument logiciel, et dans le slot Instrument choisis
+     AU MIDI-controlled Effects > IFMY > IFMY Diamond Perfect MIDI.
+     En haut de la fenêtre du plugin, menu « Side Chain » : choisis ta piste voix
+     (ou ton entrée micro). Joue des notes : ta voix se cale dessus.
+
+Si le plugin n'apparaît pas dans Logic
+--------------------------------------
+Logic Pro > Réglages > Gestionnaire de plug-ins > sélectionne IFMY >
+« Réinitialiser et rescanner la sélection ».
+
+Si ça ne suffit pas, ouvre le Terminal et colle :
+  xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/IFMY*
+  killall -9 AudioComponentRegistrar
+
+Pour chanter en direct, mets un buffer de 128 ou 256 dans
+Logic > Réglages > Audio > Taille du buffer d'E/S.

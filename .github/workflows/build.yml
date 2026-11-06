@@ -1,0 +1,100 @@
+name: Build IFMY Diamond Perfect
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ "v*" ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      AU_MAIN: "IFMY Diamond Perfect.component"
+      AU_MIDI: "IFMY Diamond Perfect MIDI.component"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: juce-8.0.4-${{ runner.os }}
+
+      - name: Configure (universal arm64 + x86_64)
+        run: cmake -B build -G Xcode -DCMAKE_BUILD_TYPE=Release
+
+      - name: Tests DSP (justesse, gammes, NaN)
+        run: |
+          cmake --build build --config Release --target DiamondTests -- -quiet
+          ./build/Release/DiamondTests
+
+      - name: Build AU + VST3 (effet + MIDI)
+        run: |
+          cmake --build build --config Release \
+            --target DiamondPerfect_AU DiamondPerfect_VST3 DiamondPerfectMIDI_AU DiamondPerfectMIDI_VST3 -- -quiet
+
+      - name: Signature ad-hoc
+        run: |
+          for p in "build/DiamondPerfect_artefacts/Release/AU/$AU_MAIN" \
+                   "build/DiamondPerfectMIDI_artefacts/Release/AU/$AU_MIDI" \
+                   "build/DiamondPerfect_artefacts/Release/VST3/IFMY Diamond Perfect.vst3" \
+                   "build/DiamondPerfectMIDI_artefacts/Release/VST3/IFMY Diamond Perfect MIDI.vst3"; do
+            codesign --force --deep --sign - "$p"
+            codesign --verify --verbose "$p"
+          done
+          lipo -info "build/DiamondPerfect_artefacts/Release/AU/$AU_MAIN/Contents/MacOS/IFMY Diamond Perfect"
+
+      - name: Install for validation
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "build/DiamondPerfect_artefacts/Release/AU/$AU_MAIN" ~/Library/Audio/Plug-Ins/Components/
+          cp -R "build/DiamondPerfectMIDI_artefacts/Release/AU/$AU_MIDI" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar || true
+          sleep 5
+
+      - name: auval (la validation officielle de Logic) — effet
+        run: auval -v aufx Idmd Ifmy
+
+      - name: auval — version MIDI
+        run: auval -v aumf Idmm Ifmy
+
+      - name: pluginval niveau 10 (stress test)
+        timeout-minutes: 40
+        run: |
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          unzip -q pluginval.zip
+          PV=pluginval.app/Contents/MacOS/pluginval
+          $PV --strictness-level 10 --validate-in-process --timeout-ms 900000 ~/Library/Audio/Plug-Ins/Components/"$AU_MAIN"
+          $PV --strictness-level 10 --validate-in-process --timeout-ms 900000 ~/Library/Audio/Plug-Ins/Components/"$AU_MIDI"
+
+      - name: Package
+        run: |
+          VERSION=$(grep -m1 -oE 'VERSION [0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | cut -d' ' -f2)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          mkdir -p dist
+          cp -R "build/DiamondPerfect_artefacts/Release/AU/$AU_MAIN" dist/
+          cp -R "build/DiamondPerfectMIDI_artefacts/Release/AU/$AU_MIDI" dist/
+          cp -R "build/DiamondPerfect_artefacts/Release/VST3/IFMY Diamond Perfect.vst3" dist/
+          cp -R "build/DiamondPerfectMIDI_artefacts/Release/VST3/IFMY Diamond Perfect MIDI.vst3" dist/
+          cp packaging/Installer.command packaging/LISEZ-MOI.txt dist/
+          chmod +x dist/Installer.command
+          ditto -c -k --sequesterRsrc --keepParent dist "IFMY-Diamond-Perfect-mac-v$VERSION.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IFMY-Diamond-Perfect-mac
+          path: IFMY-Diamond-Perfect-mac-v*.zip
+
+      - name: Release GitHub (sur tag vX.Y.Z)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: IFMY-Diamond-Perfect-mac-v*.zip
+          body_path: CHANGELOG.md
